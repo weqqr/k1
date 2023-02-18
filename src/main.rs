@@ -1,6 +1,11 @@
 use anyhow::{anyhow, Result};
 use hassle_rs::{Dxc, DxcCompiler, DxcIncludeHandler, DxcLibrary};
+use pollster::FutureExt;
+use std::borrow::Cow;
 use std::path::PathBuf;
+use wgpu::{ComputePipelineDescriptor, InstanceDescriptor, RequestAdapterOptions};
+
+const WORK_GROUP_SIZE: [u32; 2] = [8, 8];
 
 fn read_source(path: &str) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
@@ -64,11 +69,7 @@ impl ShaderCompiler {
         }
     }
 
-    fn compile(
-        &self,
-        path: &str,
-        stage: ShaderStage,
-    ) -> Result<Vec<u8>> {
+    fn compile(&self, path: &str, stage: ShaderStage) -> Result<Vec<u8>> {
         let source = read_source(path)?;
 
         let blob = self
@@ -97,17 +98,113 @@ impl ShaderCompiler {
                 let message = self
                     .library
                     .get_blob_as_string(&v.0.get_error_buffer().unwrap().into())?;
-                Err(anyhow!("shader error ({path}): {message}"))
+                Err(anyhow!("shader error ({path}):\n{message}"))
             }
         }
+    }
+}
+
+pub struct Renderer {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+impl Renderer {
+    fn new() -> Self {
+        let instance = wgpu::Instance::new(InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+
+        let adapter = instance
+            .request_adapter(&RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })
+            .block_on()
+            .unwrap();
+
+        let features = wgpu::Features::default() | wgpu::Features::SPIRV_SHADER_PASSTHROUGH;
+        let limits = wgpu::Limits::default();
+
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    features,
+                    limits,
+                },
+                None,
+            )
+            .block_on()
+            .unwrap();
+
+        Self {
+            instance,
+            adapter,
+            device,
+            queue,
+        }
+    }
+
+    fn render(&self, pass: &PathTracingPass) {
+        let mut cmd = self.device.create_command_encoder(&Default::default());
+
+        pass.execute(&mut cmd);
+
+        self.queue.submit([cmd.finish()]);
+    }
+}
+
+pub struct PathTracingPass {
+    layout: wgpu::PipelineLayout,
+    pipeline: wgpu::ComputePipeline,
+}
+
+impl PathTracingPass {
+    fn new(kernel: &[u32], device: &wgpu::Device) -> Self {
+        let module = unsafe {
+            device.create_shader_module_spirv(&wgpu::ShaderModuleDescriptorSpirV {
+                label: None,
+                source: Cow::Borrowed(kernel),
+            })
+        };
+
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&layout),
+            module: &module,
+            entry_point: ShaderStage::Compute.entry_point(),
+        });
+
+        Self { layout, pipeline }
+    }
+
+    fn execute(&self, cmd: &mut wgpu::CommandEncoder) {
+        let mut pass = cmd.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
+
+        pass.set_pipeline(&self.pipeline);
+
+        let x_groups = 1280 / WORK_GROUP_SIZE[0];
+        let y_groups = 720 / WORK_GROUP_SIZE[1];
+
+        pass.dispatch_workgroups(x_groups, y_groups, 1);
     }
 }
 
 fn main() {
     let compiler = ShaderCompiler::new();
 
-    let spirv = compiler.compile("kernel/kernel.hlsl", ShaderStage::Compute);
-    let _spirv = match spirv {
+    let kernel = compiler.compile("kernel/kernel.hlsl", ShaderStage::Compute);
+    let kernel = match kernel {
         Ok(spirv) => spirv,
         Err(e) => {
             eprintln!("couldn't compile shader:");
@@ -115,6 +212,12 @@ fn main() {
             return;
         }
     };
+
+    let renderer = Renderer::new();
+
+    let path_tracing_pass = PathTracingPass::new(bytemuck::cast_slice(&kernel), &renderer.device);
+
+    renderer.render(&path_tracing_pass);
 
     println!("Hello, world!");
 }

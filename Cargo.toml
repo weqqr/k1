@@ -7,4 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+bytemuck = "1.13"
 hassle-rs = "0.10"
+pollster = "0.2"
+wgpu = "0.15"
