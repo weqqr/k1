@@ -2,8 +2,10 @@ use anyhow::{anyhow, Result};
 use hassle_rs::{Dxc, DxcCompiler, DxcIncludeHandler, DxcLibrary};
 use pollster::FutureExt;
 use std::borrow::Cow;
+use std::fs::File;
+use std::io::BufWriter;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use wgpu::{
     BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
@@ -214,11 +216,15 @@ impl Renderer {
             },
         };
 
-        cmd.copy_texture_to_buffer(self.output.as_image_copy(), copy_buf, wgpu::Extent3d {
-            width: OUTPUT_SIZE[0],
-            height: OUTPUT_SIZE[1],
-            depth_or_array_layers: 1,
-        });
+        cmd.copy_texture_to_buffer(
+            self.output.as_image_copy(),
+            copy_buf,
+            wgpu::Extent3d {
+                width: OUTPUT_SIZE[0],
+                height: OUTPUT_SIZE[1],
+                depth_or_array_layers: 1,
+            },
+        );
 
         self.queue.submit([cmd.finish()]);
 
@@ -234,6 +240,20 @@ impl Renderer {
 
         view
     }
+}
+
+fn save_png<P: AsRef<Path>>(path: P, data: Vec<u8>) -> Result<()> {
+    let file = File::create(path)?;
+    let ref mut w = BufWriter::new(file);
+
+    let mut encoder = png::Encoder::new(w, OUTPUT_SIZE[0], OUTPUT_SIZE[1]);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&data)?;
+
+    Ok(())
 }
 
 pub struct PathTracingPass {
@@ -324,7 +344,7 @@ fn main() {
 
     let image = renderer.get_output_image();
 
-    println!("{:?}", &image[0..20]);
+    save_png("output.png", image);
 
     println!("Hello, world!");
 }
