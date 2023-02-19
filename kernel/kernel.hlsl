@@ -1,6 +1,8 @@
+#include "bsdf/lambertian.hlsli"
 #include "camera/thin_lens.hlsli"
 #include "geometry/ray.hlsli"
 #include "geometry/sphere.hlsli"
+#include "integrator/path_tracer.hlsli"
 
 [[vk::binding(0)]] RWTexture2D<float4> output;
 
@@ -17,20 +19,20 @@ void cs_main(in uint2 pixel_coord : SV_DispatchThreadID) {
     float aspect_ratio = OUTPUT_SIZE.x / OUTPUT_SIZE.y;
     ThinLensCamera camera = NewCameraFromVectors(origin, dir, radians(60.0), aspect_ratio);
 
+    RandomSource random = NewRandomSource(pixel_coord);
+
     Sphere sphere;
     sphere.center = float3(0.0, 0.0, -1.0);
     sphere.radius = 0.5;
 
+    Lambertian brdf;
+    brdf.albedo = float3(1.0, 1.0, 1.0);
+
     Ray ray = camera.get_ray(p);
 
-    float4 color;
-    float t = sphere.intersect(ray);
-    if (t > 0) {
-        float3 normal = sphere.normal(ray.point_at(t));
-        color = float4(normal, 1.0);
-    } else {
-        color = float4(0.0, 0.0, 0.0, 1.0);
-    }
+    PathTracer integrator;
 
-    output[pixel_coord] = color;
+    float3 color = integrator.integrate(ray, random, brdf, sphere);
+
+    output[pixel_coord] = float4(color, 1.0);
 }

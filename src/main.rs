@@ -344,7 +344,7 @@ fn main() {
 
     let image = renderer.get_output_image();
 
-    save_png("output.png", image);
+    save_png("output.png", image).unwrap();
 
     println!("Hello, world!");
 }
