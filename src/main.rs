@@ -2,9 +2,15 @@ use anyhow::{anyhow, Result};
 use hassle_rs::{Dxc, DxcCompiler, DxcIncludeHandler, DxcLibrary};
 use pollster::FutureExt;
 use std::borrow::Cow;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
-use wgpu::{ComputePipelineDescriptor, InstanceDescriptor, RequestAdapterOptions};
+use std::time::Duration;
+use wgpu::{
+    BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
+    BindGroupLayoutEntry, ComputePipelineDescriptor, InstanceDescriptor, RequestAdapterOptions,
+};
 
+const OUTPUT_SIZE: [u32; 2] = [1280, 720];
 const WORK_GROUP_SIZE: [u32; 2] = [8, 8];
 
 fn read_source(path: &str) -> Result<String> {
@@ -109,6 +115,8 @@ pub struct Renderer {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+
+    output: wgpu::Texture,
 }
 
 impl Renderer {
@@ -141,24 +149,95 @@ impl Renderer {
             .block_on()
             .unwrap();
 
+        let output = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: OUTPUT_SIZE[0],
+                height: OUTPUT_SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
+        });
+
         Self {
             instance,
             adapter,
             device,
             queue,
+
+            output,
         }
     }
 
     fn render(&self, pass: &PathTracingPass) {
         let mut cmd = self.device.create_command_encoder(&Default::default());
 
-        pass.execute(&mut cmd);
+        let output = self.device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &pass.bind_group_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    &self.output.create_view(&Default::default()),
+                ),
+            }],
+        });
+
+        pass.execute(&self.device, &mut cmd, &output);
 
         self.queue.submit([cmd.finish()]);
+
+        self.device.poll(wgpu::Maintain::Wait);
+    }
+
+    fn get_output_image(&self) -> Vec<u8> {
+        let mut cmd = self.device.create_command_encoder(&Default::default());
+
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (4 * OUTPUT_SIZE[0] * OUTPUT_SIZE[1]) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let copy_buf = wgpu::ImageCopyBuffer {
+            buffer: &buf,
+            layout: wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: NonZeroU32::new(OUTPUT_SIZE[0] * 4),
+                rows_per_image: None,
+            },
+        };
+
+        cmd.copy_texture_to_buffer(self.output.as_image_copy(), copy_buf, wgpu::Extent3d {
+            width: OUTPUT_SIZE[0],
+            height: OUTPUT_SIZE[1],
+            depth_or_array_layers: 1,
+        });
+
+        self.queue.submit([cmd.finish()]);
+
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+
+        self.device.poll(wgpu::Maintain::Wait);
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        let view = buf.slice(..).get_mapped_range().to_owned();
+
+        assert_eq!(view.len(), (4 * OUTPUT_SIZE[0] * OUTPUT_SIZE[1]) as usize);
+
+        view
     }
 }
 
 pub struct PathTracingPass {
+    bind_group_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     pipeline: wgpu::ComputePipeline,
 }
@@ -172,9 +251,23 @@ impl PathTracingPass {
             })
         };
 
+        let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                },
+                count: None,
+            }],
+        });
+
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -185,16 +278,26 @@ impl PathTracingPass {
             entry_point: ShaderStage::Compute.entry_point(),
         });
 
-        Self { layout, pipeline }
+        Self {
+            bind_group_layout,
+            layout,
+            pipeline,
+        }
     }
 
-    fn execute(&self, cmd: &mut wgpu::CommandEncoder) {
+    fn execute(
+        &self,
+        device: &wgpu::Device,
+        cmd: &mut wgpu::CommandEncoder,
+        output: &wgpu::BindGroup,
+    ) {
         let mut pass = cmd.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
 
+        pass.set_bind_group(0, output, &[]);
         pass.set_pipeline(&self.pipeline);
 
-        let x_groups = 1280 / WORK_GROUP_SIZE[0];
-        let y_groups = 720 / WORK_GROUP_SIZE[1];
+        let x_groups = OUTPUT_SIZE[0] / WORK_GROUP_SIZE[0];
+        let y_groups = OUTPUT_SIZE[1] / WORK_GROUP_SIZE[1];
 
         pass.dispatch_workgroups(x_groups, y_groups, 1);
     }
@@ -218,6 +321,10 @@ fn main() {
     let path_tracing_pass = PathTracingPass::new(bytemuck::cast_slice(&kernel), &renderer.device);
 
     renderer.render(&path_tracing_pass);
+
+    let image = renderer.get_output_image();
+
+    println!("{:?}", &image[0..20]);
 
     println!("Hello, world!");
 }
