@@ -24,24 +24,22 @@ class PathTracer {
         float3 sky = float3(1.0, 1.0, 1.0);
         bool last_diffuse = false;
         for (int i = 0; i < MAX_BOUNCES; i++) {
-            float t = sphere.intersect(ray);
-            float3 p = ray.point_at(t);
-            float3 normal = sphere.normal(p);
+            IntersectionData data = sphere.intersect(ray);
 
-            if (dot(normal, ray.dir) > 0) {
-                normal = -normal;
+            if (dot(data.normal, ray.dir) > 0) {
+                data.normal = -data.normal;
             }
 
-            if (t < 0) {
+            if (data.t < 0) {
                 color += throughput * sky;
                 return color;
             }
 
-            BrdfOutput result = brdf.evaluate(random, normal, ray.dir);
+            BrdfOutput result = brdf.evaluate(random, data.normal, ray.dir);
 
             throughput *= result.reflectance / result.pdf;
 
-            ray = NewRay(ray.origin + t * ray.dir, result.next_dir);
+            ray = NewRay(data.pt, result.next_dir);
         }
 
 #if HIGHLIGHT_BIASED_PATHS

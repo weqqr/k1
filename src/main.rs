@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
 use hassle_rs::{Dxc, DxcCompiler, DxcIncludeHandler, DxcLibrary};
 use pollster::FutureExt;
@@ -8,8 +10,8 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use wgpu::{
-    BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, ComputePipelineDescriptor, InstanceDescriptor, RequestAdapterOptions,
+    BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
+    ComputePipelineDescriptor, InstanceDescriptor, RequestAdapterOptions,
 };
 
 const OUTPUT_SIZE: [u32; 2] = [1280, 720];
@@ -190,7 +192,7 @@ impl Renderer {
             }],
         });
 
-        pass.execute(&self.device, &mut cmd, &output);
+        pass.execute(&mut cmd, &output);
 
         self.queue.submit([cmd.finish()]);
 
@@ -305,12 +307,7 @@ impl PathTracingPass {
         }
     }
 
-    fn execute(
-        &self,
-        device: &wgpu::Device,
-        cmd: &mut wgpu::CommandEncoder,
-        output: &wgpu::BindGroup,
-    ) {
+    fn execute(&self, cmd: &mut wgpu::CommandEncoder, output: &wgpu::BindGroup) {
         let mut pass = cmd.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
 
         pass.set_bind_group(0, output, &[]);

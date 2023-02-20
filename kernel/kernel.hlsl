@@ -26,7 +26,7 @@ void cs_main(in uint2 pixel_coord : SV_DispatchThreadID) {
     sphere.radius = 0.5;
 
     Lambertian brdf;
-    brdf.albedo = float3(1.0, 1.0, 1.0);
+    brdf.albedo = float3(0.2, 0.8, 0.3);
 
     Ray ray = camera.get_ray(p);
 

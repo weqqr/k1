@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-bytemuck = "1.13"
+bytemuck = { version = "1.13", features = ["derive"] }
 hassle-rs = "0.10"
 png = "0.17"
 pollster = "0.2"
